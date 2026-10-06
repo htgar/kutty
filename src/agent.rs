@@ -49,6 +49,9 @@ pub fn run_turn(
     let session_path = state::session(cwd)?;
     state::log(&session_path, &format!(r#"{{"role":"user","content":{}}}"#, serde_json::to_string(task)?))?;
 
+    let session_path = state::session(cwd)?;
+    state::log(&session_path, &format!(r#"{{"role":"user","content":{}}}"#, serde_json::to_string(task)?))?;
+
     let mut conv = String::new();
     conv.push_str("<|im_start|>system\n");
     conv.push_str("## AGENTS.md\n");

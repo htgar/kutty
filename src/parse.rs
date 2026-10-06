@@ -81,3 +81,11 @@ fn parse_args_body(body: &str) -> Option<Value> {
     }
     None
 }
+
+#[test]
+fn parse_param_style_finish() {
+    let s = r#"<function name="finish"><param name="answer">4</param></function>"#;
+    let c = extract_call(s).unwrap();
+    assert_eq!(c.name, "finish");
+    assert_eq!(c.args["answer"], "4");
+}
