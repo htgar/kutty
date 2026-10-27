@@ -3,8 +3,8 @@ use std::path::Path;
 use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
-use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::model::LlamaModel;
+use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::sampling::LlamaSampler;
 
 use crate::parse;
@@ -12,6 +12,8 @@ use crate::state;
 use crate::tools;
 
 const MAX_STEPS: usize = 20;
+const MAX_NEW_TOKENS: usize = 1024;
+const MIN_FREE_TOKENS: usize = 64;
 const TOOL_BLURB: &str = r#"## Tool format
 Call a tool with:
 <function name="shell">{"command":"ls"}</function>
@@ -28,7 +30,10 @@ pub struct Engine {
 
 impl Engine {
     pub fn load(path: &Path, ctx_size: u32) -> Result<Self, Box<dyn std::error::Error>> {
-        let backend = LlamaBackend::init()?;
+        let mut backend = LlamaBackend::init()?;
+        if std::env::var_os("KUTTY_VERBOSE").is_none() {
+            backend.void_logs();
+        }
         let params = LlamaModelParams::default();
         let pinned = Box::pin(params);
         let model = LlamaModel::load_from_file(&backend, path, &pinned)?;
@@ -41,16 +46,19 @@ impl Engine {
 }
 
 pub fn run_turn(
-    engine: &mut Engine,
+    engine: &Engine,
     cwd: &Path,
     task: &str,
     think: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let session_path = state::session(cwd)?;
-    state::log(&session_path, &format!(r#"{{"role":"user","content":{}}}"#, serde_json::to_string(task)?))?;
-
-    let session_path = state::session(cwd)?;
-    state::log(&session_path, &format!(r#"{{"role":"user","content":{}}}"#, serde_json::to_string(task)?))?;
+    state::log(
+        &session_path,
+        &format!(
+            r#"{{"role":"user","content":{}}}"#,
+            serde_json::to_string(task)?
+        ),
+    )?;
 
     let mut conv = String::new();
     conv.push_str("<|im_start|>system\n");
@@ -75,13 +83,22 @@ pub fn run_turn(
 
     for _step in 0..MAX_STEPS {
         let reply = complete(engine, &conv)?;
-        state::log(&session_path, &format!(r#"{{"role":"assistant","content":{}}}"#, serde_json::to_string(&reply)?))?;
+        state::log(
+            &session_path,
+            &format!(
+                r#"{{"role":"assistant","content":{}}}"#,
+                serde_json::to_string(&reply)?
+            ),
+        )?;
 
         match parse::extract_call(&reply) {
             None => {
                 println!("{reply}");
                 consecutive_parse_fails += 1;
-                state::log(&session_path, &format!(r#"{{"error":"parse_fail","step":{consecutive_parse_fails}}}"#))?;
+                state::log(
+                    &session_path,
+                    &format!(r#"{{"error":"parse_fail","step":{consecutive_parse_fails}}}"#),
+                )?;
                 if consecutive_parse_fails >= 3 {
                     eprintln!("parse failed 3 times; raw reply above");
                     break;
@@ -102,7 +119,11 @@ pub fn run_turn(
 
                 let out = match call.name.as_str() {
                     "shell" => {
-                        let cmd = call.args.get("command").and_then(|v| v.as_str()).unwrap_or("");
+                        let cmd = call
+                            .args
+                            .get("command")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
                         println!("[shell] {cmd}");
                         tools::shell(cwd, cmd)
                     }
@@ -113,14 +134,28 @@ pub fn run_turn(
                     }
                     "write_file" => {
                         let path = call.args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-                        let content = call.args.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                        let content = call
+                            .args
+                            .get("content")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
                         println!("[write_file] {path}");
                         tools::write_file(cwd, path, content)
                     }
                     "finish" => {
-                        let answer = call.args.get("answer").and_then(|v| v.as_str()).unwrap_or("");
+                        let answer = call
+                            .args
+                            .get("answer")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
                         println!("{answer}");
-                        state::log(&session_path, &format!(r#"{{"tool":"finish","args":{}}}"#, serde_json::to_string(&call.args)?))?;
+                        state::log(
+                            &session_path,
+                            &format!(
+                                r#"{{"tool":"finish","args":{}}}"#,
+                                serde_json::to_string(&call.args)?
+                            ),
+                        )?;
                         return Ok(());
                     }
                     other => {
@@ -128,7 +163,15 @@ pub fn run_turn(
                         "unknown tool".to_string()
                     }
                 };
-                state::log(&session_path, &format!(r#"{{"tool":{},"args":{},"out":{}}}"#, serde_json::to_string(&call.name)?, serde_json::to_string(&call.args)?, serde_json::to_string(&out)?))?;
+                state::log(
+                    &session_path,
+                    &format!(
+                        r#"{{"tool":{},"args":{},"out":{}}}"#,
+                        serde_json::to_string(&call.name)?,
+                        serde_json::to_string(&call.args)?,
+                        serde_json::to_string(&out)?
+                    ),
+                )?;
                 conv.push_str(&reply);
                 conv.push_str(&format!("<|im_end|>\n<|im_start|>user\nObservation: {out}<|im_end|>\n<|im_start|>assistant\n<function name=\""));
             }
@@ -137,25 +180,54 @@ pub fn run_turn(
     Ok(())
 }
 
-fn complete(engine: &mut Engine, prompt: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let ctx_params = LlamaContextParams::default().with_n_ctx(Some(std::num::NonZeroU32::new(engine.ctx_size).unwrap()));
-    let mut ctx = engine.model.new_context(&engine.backend, ctx_params)?;
-
+fn complete(engine: &Engine, prompt: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let t0 = std::time::Instant::now();
     let tokens = engine.model.vocab().tokenize(prompt.as_bytes(), true, true);
-    let mut batch = LlamaBatch::new(engine.ctx_size as usize, 1);
-    let last = (tokens.len() as i32) - 1;
-    for (i, tok) in (0_i32..).zip(tokens.into_iter()) {
-        batch.add(tok, i, &[0], i == last)?;
+    let prompt_tokens = tokens.len();
+    let t_tokenize = t0.elapsed();
+
+    let ctx_size = engine.ctx_size as usize;
+    if prompt_tokens == 0 {
+        return Err("empty prompt".into());
     }
-    ctx.decode(&mut batch)?;
+    if prompt_tokens + MIN_FREE_TOKENS > ctx_size {
+        return Err(format!(
+            "prompt is {prompt_tokens} tokens but context is {ctx_size}; need at least {MIN_FREE_TOKENS} free tokens — raise --ctx"
+        )
+        .into());
+    }
+    let max_new = (ctx_size - prompt_tokens).min(MAX_NEW_TOKENS);
+
+    let ctx_params = LlamaContextParams::default()
+        .with_n_ctx(Some(std::num::NonZeroU32::new(engine.ctx_size).unwrap()));
+    let mut ctx = engine.model.new_context(&engine.backend, ctx_params)?;
+    let t_ctx = t0.elapsed();
+
+    let n_batch = ctx.n_batch().max(1) as usize;
+    let mut batch = LlamaBatch::new(n_batch.min(prompt_tokens), 1);
+    let mut pos = 0usize;
+    let mut sample_idx = 0i32;
+    for chunk in tokens.chunks(n_batch) {
+        batch.clear();
+        for (offset, token) in chunk.iter().enumerate() {
+            let is_last = pos + offset + 1 == prompt_tokens;
+            batch.add(*token, (pos + offset) as i32, &[0], is_last)?;
+        }
+        ctx.decode(&mut batch)?;
+        sample_idx = batch.n_tokens() - 1;
+        pos += chunk.len();
+    }
+    let t_prefill = t0.elapsed();
 
     let mut sampler = LlamaSampler::chain_simple([LlamaSampler::greedy()]);
-    let mut cur = batch.n_tokens();
     let mut bytes: Vec<u8> = Vec::new();
+    let mut gen_tokens = 0;
 
-    for _ in 0..1024 {
-        let token = sampler.sample(&ctx, batch.n_tokens() - 1);
+    let end = prompt_tokens as i32 + max_new as i32;
+    for cur in (prompt_tokens as i32)..end {
+        let token = sampler.sample(&ctx, sample_idx);
         sampler.accept(token);
+        gen_tokens += 1;
         if engine.model.vocab().is_eog(token) {
             break;
         }
@@ -166,8 +238,21 @@ fn complete(engine: &mut Engine, prompt: &str) -> Result<String, Box<dyn std::er
         }
         batch.clear();
         batch.add(token, cur, &[0], true)?;
-        cur += 1;
         ctx.decode(&mut batch)?;
+        sample_idx = batch.n_tokens() - 1;
+    }
+    let t_gen = t0.elapsed();
+    if std::env::var_os("KUTTY_TIMING").is_some() {
+        eprintln!(
+            "[timing] total {:.0} ms; tokenize {:.0} ms; ctx {:.0} ms; prefill {:.0} ms; gen {:.0} ms; prompt {} tok; gen {} tok",
+            t_gen.as_millis(),
+            t_tokenize.as_millis(),
+            (t_ctx - t_tokenize).as_millis(),
+            (t_prefill - t_ctx).as_millis(),
+            (t_gen - t_prefill).as_millis(),
+            prompt_tokens,
+            gen_tokens
+        );
     }
     let mut out = format!("<function name=\"{}", String::from_utf8_lossy(&bytes));
     if let Some(pos) = out.rfind("</function>") {

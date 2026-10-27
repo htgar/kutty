@@ -2,6 +2,11 @@
 name = "kutty"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
+description = "A minimal one-shot local agent harness"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/htgar/kutty"
 
 [dependencies]
 hf-hub = "0.4"

@@ -43,7 +43,10 @@ fn parse_args_body(body: &str) -> Option<Value> {
     let mut end = None;
     for (i, ch) in body.char_indices() {
         match ch {
-            '{' => { started = true; depth += 1; }
+            '{' => {
+                started = true;
+                depth += 1;
+            }
             '}' if started => {
                 depth -= 1;
                 if depth == 0 {
@@ -64,13 +67,19 @@ fn parse_args_body(body: &str) -> Option<Value> {
         let mut cursor = body;
         while let Some(i) = cursor.find("<param") {
             let rest = &cursor[i..];
-            let Some(name_q) = rest.find("name=\"") else { break };
+            let Some(name_q) = rest.find("name=\"") else {
+                break;
+            };
             let ns = name_q + 6;
-            let Some(ne) = rest[ns..].find('"') else { break };
+            let Some(ne) = rest[ns..].find('"') else {
+                break;
+            };
             let name = rest[ns..ns + ne].to_string();
             let Some(gt) = rest.find('>') else { break };
             let body_start = gt + 1;
-            let Some(end) = rest[body_start..].find("</param>") else { break };
+            let Some(end) = rest[body_start..].find("</param>") else {
+                break;
+            };
             let val = rest[body_start..body_start + end].trim();
             map.insert(name, Value::String(val.to_string()));
             cursor = &rest[body_start + end + 8..];
@@ -82,10 +91,55 @@ fn parse_args_body(body: &str) -> Option<Value> {
     None
 }
 
-#[test]
-fn parse_param_style_finish() {
-    let s = r#"<function name="finish"><param name="answer">4</param></function>"#;
-    let c = extract_call(s).unwrap();
-    assert_eq!(c.name, "finish");
-    assert_eq!(c.args["answer"], "4");
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_param_style_finish() {
+        let s = r#"<function name="finish"><param name="answer">4</param></function>"#;
+        let c = extract_call(s).unwrap();
+        assert_eq!(c.name, "finish");
+        assert_eq!(c.args["answer"], "4");
+    }
+
+    #[test]
+    fn parse_json_args() {
+        let s = r#"<function name="shell">{"command":"ls -la"}</function>"#;
+        let c = extract_call(s).unwrap();
+        assert_eq!(c.name, "shell");
+        assert_eq!(c.args["command"], "ls -la");
+    }
+
+    #[test]
+    fn parse_json_with_trailing_text() {
+        let s = r#"<function name="shell">{"command":"pwd"} trailing</function>"#;
+        let c = extract_call(s).unwrap();
+        assert_eq!(c.args["command"], "pwd");
+    }
+
+    #[test]
+    fn ignores_unterminated_call() {
+        let s = r#"<function name="shell">{"command":"ls"}"#;
+        assert!(extract_call(s).is_none());
+    }
+
+    #[test]
+    fn last_call_wins() {
+        let s = concat!(
+            r#"<function name="shell">{"command":"ls"}</function>"#,
+            r#"<function name="finish">{"answer":"done"}</function>"#,
+        );
+        let c = extract_call(s).unwrap();
+        assert_eq!(c.name, "finish");
+        assert_eq!(c.args["answer"], "done");
+    }
+
+    #[test]
+    fn malformed_args_become_null() {
+        let s = r#"<function name="shell">not json</function>"#;
+        let c = extract_call(s).unwrap();
+        assert_eq!(c.name, "shell");
+        assert!(c.args.is_null());
+    }
 }

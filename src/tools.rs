@@ -69,9 +69,32 @@ fn within_cwd(cwd: &Path, candidate: &Path) -> bool {
     for c in candidate.components() {
         match c {
             Component::CurDir => {}
-            Component::ParentDir => { out.pop(); }
+            Component::ParentDir => {
+                out.pop();
+            }
             other => out.push(other.as_os_str()),
         }
     }
     out.starts_with(cwd)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allows_cwd_and_children() {
+        let cwd = Path::new("/tmp/kutty-test");
+        assert!(within_cwd(cwd, cwd));
+        assert!(within_cwd(cwd, Path::new("/tmp/kutty-test/a.txt")));
+        assert!(within_cwd(cwd, Path::new("/tmp/kutty-test/a/../b.txt")));
+    }
+
+    #[test]
+    fn rejects_escapes() {
+        let cwd = Path::new("/tmp/kutty-test");
+        assert!(!within_cwd(cwd, Path::new("/tmp/kutty-test/../secret")));
+        assert!(!within_cwd(cwd, Path::new("/etc/passwd")));
+        assert!(!within_cwd(cwd, Path::new("/tmp/kutty-test-other/a")));
+    }
 }
