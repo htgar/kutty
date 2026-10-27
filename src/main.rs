@@ -1,5 +1,4 @@
 mod agent;
-mod parse;
 mod state;
 mod tools;
 
@@ -7,29 +6,16 @@ use std::path::PathBuf;
 
 const DEFAULT_REPO: &str = "openbmb/MiniCPM5-2B-GGUF";
 const DEFAULT_QUANT: &str = "MiniCPM5-2B-Q4_K_M.gguf";
-const DEFAULT_CTX: u32 = 4096;
 const MIN_CTX: u32 = 512;
 
+#[derive(Default)]
 struct Args {
     task: Option<String>,
     think: bool,
     model: Option<PathBuf>,
-    ctx: u32,
+    ctx: Option<u32>,
     help: bool,
     version: bool,
-}
-
-impl Default for Args {
-    fn default() -> Self {
-        Self {
-            task: None,
-            think: false,
-            model: None,
-            ctx: DEFAULT_CTX,
-            help: false,
-            version: false,
-        }
-    }
 }
 
 fn usage() -> &'static str {
@@ -38,7 +24,7 @@ fn usage() -> &'static str {
 usage: kutty [options] <task...>
 
   --model PATH       use a local GGUF instead of the default download
-  --ctx N            context size (default 4096, minimum 512)
+  --ctx N            context size (default: model context, 512-4096)
   --think            ask the model to reason before answering
   --                 treat all remaining arguments as task words
   -h, --help         show this help
@@ -74,7 +60,7 @@ where
                 if ctx < MIN_CTX {
                     return Err(format!("--ctx must be at least {MIN_CTX} (got {ctx})"));
                 }
-                parsed.ctx = ctx;
+                parsed.ctx = Some(ctx);
             }
             "-h" | "--help" => parsed.help = true,
             "--version" => parsed.version = true,
@@ -143,14 +129,14 @@ mod tests {
     fn joins_unquoted_words() {
         let args = parse(&["what", "is", "2+2?"]).unwrap();
         assert_eq!(args.task.as_deref(), Some("what is 2+2?"));
-        assert_eq!(args.ctx, DEFAULT_CTX);
+        assert_eq!(args.ctx, None);
     }
 
     #[test]
     fn parses_flags() {
         let args = parse(&["--think", "--ctx", "8192", "--model", "m.gguf", "hello"]).unwrap();
         assert!(args.think);
-        assert_eq!(args.ctx, 8192);
+        assert_eq!(args.ctx, Some(8192));
         assert_eq!(args.model.as_deref(), Some(std::path::Path::new("m.gguf")));
         assert_eq!(args.task.as_deref(), Some("hello"));
     }
